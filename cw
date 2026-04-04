@@ -17,12 +17,16 @@ usage() {
 Usage: cw <command> [args...]
 
 Commands:
-  new <name> <path> [claude args...]  Create a new container and start Claude Code
+  new <name> <path> [--with-latex] [claude args...]
+                                      Create a new container and start Claude Code
   attach <name>                       Re-attach to an existing container (resumes session)
+  shell <name>                        Open a root shell in a running container
   ls                                  List all cw containers
   rm <name>                           Remove a container
   rm --all                            Remove all stopped cw containers
-  rebuild                             Rebuild the Docker image
+  set <name> --memory <mem> [--cpus <n>]
+                                      Update resource limits on a container (running or stopped)
+  rebuild [--with-latex]              Rebuild the Docker image
 
 Environment variables:
   CW_GITHUB_TOKEN_FILE  GitHub token file (default: ~/.claude-worker/github-token)
@@ -33,6 +37,8 @@ Examples:
   cw new fix-auth ~/src/myproject
   cw new experiment /tmp/scratch
   cw new bugfix ~/src/myproject 'fix the login bug'
+  cw new paper ~/src/thesis --with-latex
+  cw rebuild --with-latex
   cw ls
   cw attach fix-auth
   cw rm fix-auth
@@ -60,10 +66,20 @@ find_containers() {
 # --- Commands ---
 
 cmd_new() {
-    local name="${1:?Usage: cw new <name> <path> [claude args...]}"
-    local project_path="${2:?Usage: cw new <name> <path> [claude args...]}"
+    local name="${1:?Usage: cw new <name> <path> [--with-latex] [claude args...]}"
+    local project_path="${2:?Usage: cw new <name> <path> [--with-latex] [claude args...]}"
     shift 2
-    local claude_args=("$@")
+
+    # Parse --with-latex flag
+    local use_latex=0
+    local claude_args=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --with-latex) use_latex=1 ;;
+            *) claude_args+=("$1") ;;
+        esac
+        shift
+    done
 
     # Default to --dangerously-skip-permissions
     if [[ ${#claude_args[@]} -eq 0 ]]; then
@@ -77,13 +93,22 @@ cmd_new() {
     }
     local project="$name"
 
-    # Check for existing running container for this project
-    local existing
-    existing="$(find_containers "$project" --running | head -1)"
-    if [[ -n "$existing" ]]; then
-        echo "A running container already exists for '${project}': ${existing}" >&2
-        echo "Use 'cw attach ${project}' to re-attach, or 'cw rm ${project}' first." >&2
-        exit 1
+    # Check for existing container for this project
+    local container_name="${CONTAINER_PREFIX}-${project}"
+    if docker inspect "$container_name" &>/dev/null; then
+        local existing_state
+        existing_state="$(docker inspect -f '{{.State.Status}}' "$container_name")"
+        case "$existing_state" in
+            running)
+                echo "A running container already exists for '${project}': ${container_name}" >&2
+                echo "Use 'cw attach ${project}' to re-attach, or 'cw rm ${project}' first." >&2
+                exit 1
+                ;;
+            *)
+                echo "Removing existing ${existing_state} container: ${container_name}"
+                docker rm -f "$container_name" > /dev/null
+                ;;
+        esac
     fi
 
     # GitHub token
@@ -99,11 +124,19 @@ cmd_new() {
     git_name="$(git config user.name 2>/dev/null || echo "Claude Worker")"
     git_email="$(git config user.email 2>/dev/null || echo "claude-worker@localhost")"
 
-    # Container name: cw-<project> (deterministic, one per project)
-    local container_name="${CONTAINER_PREFIX}-${project}"
+    # Select image variant
+    local image="$IMAGE"
+    if [[ "$use_latex" -eq 1 ]]; then
+        image="${IMAGE%:*}:latex"
+        if ! docker image inspect "$image" &>/dev/null; then
+            echo "LaTeX image not found. Build it first with: cw rebuild --with-latex" >&2
+            exit 1
+        fi
+    fi
 
     echo "Creating container: ${container_name}"
     echo "Project: ${project_path}"
+    echo "Image: ${image}"
     echo "Claude args: ${claude_args[*]}"
     echo ""
 
@@ -132,12 +165,13 @@ cmd_new() {
         --cpus="${CPU_LIMIT}" \
         \
         --net=host \
+        --gpus all \
         --cap-drop=ALL \
         --cap-add=NET_RAW \
         \
         --user 1000:1000 \
         \
-        "$IMAGE" \
+        "$image" \
         -c '
             # Git config
             git config --global credential.helper "!f() { echo username=oauth; echo \"password=\${GITHUB_TOKEN}\"; }; f"
@@ -155,7 +189,7 @@ cmd_new() {
         ' > /dev/null
 
     # Set tmux pane title and start
-    [ -n "$TMUX" ] && tmux rename-window "$project"
+    [ -n "${TMUX:-}" ] && tmux rename-window "$project"
     exec docker start -ai "$container_name"
 }
 
@@ -178,12 +212,12 @@ cmd_attach() {
     case "$state" in
         running)
             echo "Attaching to running container: ${container_name}"
-            [ -n "$TMUX" ] && tmux rename-window "$project"
+            [ -n "${TMUX:-}" ] && tmux rename-window "$project"
             exec docker attach "$container_name"
             ;;
-        exited)
-            echo "Restarting stopped container: ${container_name}"
-            [ -n "$TMUX" ] && tmux rename-window "$project"
+        created|exited)
+            echo "Starting container: ${container_name}"
+            [ -n "${TMUX:-}" ] && tmux rename-window "$project"
             exec docker start -ai "$container_name"
             ;;
         *)
@@ -191,6 +225,28 @@ cmd_attach() {
             exit 1
             ;;
     esac
+}
+
+cmd_shell() {
+    local project="${1:?Usage: cw shell <name>}"
+    local container_name="${CONTAINER_PREFIX}-${project}"
+
+    if ! docker inspect "$container_name" &>/dev/null; then
+        echo "Error: No container '${container_name}' found." >&2
+        exit 1
+    fi
+
+    local state
+    state="$(docker inspect -f '{{.State.Status}}' "$container_name")"
+    if [[ "$state" != "running" ]]; then
+        echo "Error: Container '${container_name}' is not running (state: ${state})." >&2
+        echo "Start it first with 'cw attach ${project}'." >&2
+        exit 1
+    fi
+
+    local pid
+    pid="$(docker inspect -f '{{.State.Pid}}' "$container_name")"
+    exec sudo nsenter -t "$pid" -m -u -i -n -p -- bash
 }
 
 cmd_ls() {
@@ -240,19 +296,66 @@ cmd_rm() {
     echo "Removed ${container_name}"
 }
 
+cmd_set() {
+    local project="${1:?Usage: cw set <name> --memory <mem> [--cpus <n>]}"
+    shift
+    local container_name="${CONTAINER_PREFIX}-${project}"
+
+    if ! docker inspect "$container_name" &>/dev/null; then
+        echo "Error: No container '${container_name}' found." >&2
+        exit 1
+    fi
+
+    local update_args=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --memory) update_args+=("--memory" "$2"); shift ;;
+            --cpus)   update_args+=("--cpus" "$2"); shift ;;
+            *) echo "Unknown option: $1" >&2; exit 1 ;;
+        esac
+        shift
+    done
+
+    if [[ ${#update_args[@]} -eq 0 ]]; then
+        echo "Nothing to update. Use --memory and/or --cpus." >&2
+        exit 1
+    fi
+
+    docker update "${update_args[@]}" "$container_name"
+    echo "Updated ${container_name}."
+}
+
 cmd_rebuild() {
-    echo "Rebuilding claude-worker image..."
+    local with_latex=0
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --with-latex) with_latex=1 ;;
+        esac
+        shift
+    done
+
     local script_dir
     script_dir="$(cd "$(dirname "$0")" && pwd)"
-    # If cw is a symlink, resolve to the real directory
     if [[ -L "$0" ]]; then
         script_dir="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
     fi
-    docker build \
-        --build-arg USER_UID="$(id -u)" \
-        --build-arg USER_GID="$(id -g)" \
-        -t claude-worker:latest \
-        "$script_dir"
+
+    if [[ "$with_latex" -eq 1 ]]; then
+        echo "Rebuilding claude-worker:latex image (with LaTeX + Pandoc)..."
+        docker build \
+            --build-arg USER_UID="$(id -u)" \
+            --build-arg USER_GID="$(id -g)" \
+            --build-arg WITH_LATEX=1 \
+            -t claude-worker:latex \
+            "$script_dir"
+    else
+        echo "Rebuilding claude-worker:latest image..."
+        docker build \
+            --build-arg USER_UID="$(id -u)" \
+            --build-arg USER_GID="$(id -g)" \
+            -t claude-worker:latest \
+            "$script_dir"
+    fi
     echo "Done."
 }
 
@@ -268,9 +371,11 @@ shift
 case "$COMMAND" in
     new)     cmd_new "$@" ;;
     attach)  cmd_attach "$@" ;;
+    shell)   cmd_shell "$@" ;;
     ls)      cmd_ls ;;
     rm)      cmd_rm "$@" ;;
-    rebuild) cmd_rebuild ;;
+    set)     cmd_set "$@" ;;
+    rebuild) cmd_rebuild "$@" ;;
     help)    usage ;;
     *)
         echo "Unknown command: ${COMMAND}" >&2

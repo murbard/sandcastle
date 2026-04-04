@@ -2,12 +2,14 @@ FROM ubuntu:24.04
 
 ARG USER_UID=1000
 ARG USER_GID=1000
+ARG WITH_LATEX=0
 
 ENV DEBIAN_FRONTEND=noninteractive
 
 # ── System packages (Tier 1 + 2) ──────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
     # Core CLI
+    sudo \
     git curl wget jq ripgrep fd-find htop tmux unzip xxd sqlite3 \
     tar gzip xz-utils openssh-client ca-certificates \
     # C/C++ toolchain
@@ -16,6 +18,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Dev libraries (needed by Python/OCaml packages)
     libsodium-dev libgmp-dev libffi-dev libev-dev libhidapi-dev \
     libssl-dev zlib1g-dev \
+    # Media
+    ffmpeg \
     # DB clients
     postgresql-client \
     # opam dependencies
@@ -37,7 +41,8 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 
 # ── Non-root user (ubuntu:24.04 ships with ubuntu:1000, rename it) ─────────────
 RUN usermod -l coder -d /home/coder -m ubuntu \
-    && groupmod -n coder ubuntu
+    && groupmod -n coder ubuntu \
+    && echo 'coder ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/coder
 
 USER coder
 
@@ -104,6 +109,16 @@ ENV OCAML_TOPLEVEL_PATH="/home/coder/.opam/default/lib/toplevel"
 # ── Rust ───────────────────────────────────────────────────────────────────────
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/home/coder/.cargo/bin:${PATH}"
+
+# ── LaTeX + Pandoc (optional, ~900MB) ───────────────────────────────────────
+USER root
+RUN if [ "$WITH_LATEX" = "1" ]; then \
+        apt-get update && apt-get install -y --no-install-recommends \
+            texlive texlive-latex-extra texlive-fonts-recommended \
+            texlive-xetex latexmk pandoc \
+        && rm -rf /var/lib/apt/lists/*; \
+    fi
+USER coder
 
 WORKDIR /workspace
 ENTRYPOINT ["/bin/bash"]
