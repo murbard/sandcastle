@@ -17,14 +17,18 @@ usage() {
 Usage: cw <command> [args...]
 
 Commands:
-  new <name> <path> [--with-latex] [claude args...]
+  new <name> <path> [options] [claude args...]
                                       Create a new container and start Claude Code
+      --with-latex                    Use LaTeX-enabled image
+      --memory <mem|max>              Memory limit (default: \$CW_MEMORY or 8g, "max" = unlimited)
+      --cpus <n|max>                  CPU limit (default: \$CW_CPUS or 4, "max" = unlimited)
+      --gpus <all|none|0,1,...>       GPU access (default: all)
   attach <name>                       Re-attach to an existing container (resumes session)
   shell <name>                        Open a root shell in a running container
   ls                                  List all cw containers
   rm <name>                           Remove a container
   rm --all                            Remove all stopped cw containers
-  set <name> --memory <mem> [--cpus <n>]
+  set <name> --memory <mem|max> [--cpus <n|max>]
                                       Update resource limits on a container (running or stopped)
   rebuild [--with-latex]              Rebuild the Docker image
 
@@ -38,6 +42,9 @@ Examples:
   cw new experiment /tmp/scratch
   cw new bugfix ~/src/myproject 'fix the login bug'
   cw new paper ~/src/thesis --with-latex
+  cw new ml-train ~/src/model --memory max --cpus max --gpus 0,1
+  cw new safe-task ~/src/app --gpus none
+  cw set ml-train --memory max --cpus max
   cw rebuild --with-latex
   cw ls
   cw attach fix-auth
@@ -70,16 +77,26 @@ cmd_new() {
     local project_path="${2:?Usage: cw new <name> <path> [--with-latex] [claude args...]}"
     shift 2
 
-    # Parse --with-latex flag
+    # Parse flags
     local use_latex=0
+    local memory="$MEMORY_LIMIT"
+    local cpus="$CPU_LIMIT"
+    local gpus="all"
     local claude_args=()
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --with-latex) use_latex=1 ;;
+            --memory) memory="$2"; shift ;;
+            --cpus)   cpus="$2"; shift ;;
+            --gpus)   gpus="$2"; shift ;;
             *) claude_args+=("$1") ;;
         esac
         shift
     done
+
+    # Resolve "max" to unlimited (Docker uses 0 for no limit)
+    [[ "$memory" == "max" ]] && memory=0
+    [[ "$cpus" == "max" ]]   && cpus=0
 
     # Default to --dangerously-skip-permissions
     if [[ ${#claude_args[@]} -eq 0 ]]; then
@@ -134,9 +151,18 @@ cmd_new() {
         fi
     fi
 
+    # Build GPU flag
+    local gpu_flag=""
+    case "$gpus" in
+        none|"") ;;
+        all)     gpu_flag="--gpus all" ;;
+        *)       gpu_flag="--gpus device=${gpus}" ;;
+    esac
+
     echo "Creating container: ${container_name}"
     echo "Project: ${project_path}"
     echo "Image: ${image}"
+    echo "GPUs: ${gpus}"
     echo "Claude args: ${claude_args[*]}"
     echo ""
 
@@ -161,11 +187,11 @@ cmd_new() {
         \
         --pids-limit=512 \
         --ulimit nofile=4096:4096 \
-        --memory="${MEMORY_LIMIT}" \
-        --cpus="${CPU_LIMIT}" \
+        --memory="${memory}" \
+        --cpus="${cpus}" \
         \
         --net=host \
-        --gpus all \
+        ${gpu_flag:+$gpu_flag} \
         --cap-drop=ALL \
         --cap-add=NET_RAW \
         \
@@ -309,8 +335,16 @@ cmd_set() {
     local update_args=()
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --memory) update_args+=("--memory" "$2"); shift ;;
-            --cpus)   update_args+=("--cpus" "$2"); shift ;;
+            --memory)
+                local mem="$2"; shift
+                [[ "$mem" == "max" ]] && mem="-1"
+                update_args+=("--memory" "$mem")
+                ;;
+            --cpus)
+                local cpu="$2"; shift
+                [[ "$cpu" == "max" ]] && cpu="0"
+                update_args+=("--cpus" "$cpu")
+                ;;
             *) echo "Unknown option: $1" >&2; exit 1 ;;
         esac
         shift
