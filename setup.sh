@@ -6,6 +6,65 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 echo "=== Claude Worker Setup ==="
 echo ""
 
+# --- 0. Preflight checks ---
+errors=0
+
+# Docker installed?
+if command -v docker &>/dev/null; then
+    echo "[ok] Docker is installed ($(docker --version | head -1))"
+else
+    echo "[!!] Docker is not installed. Install it first: https://docs.docker.com/engine/install/"
+    errors=$((errors + 1))
+fi
+
+# Docker daemon running?
+if docker info &>/dev/null 2>&1; then
+    echo "[ok] Docker daemon is running"
+else
+    if id -nG "$USER" | grep -qw docker; then
+        echo "[!!] Docker daemon is not running. Start it with: sudo systemctl start docker"
+    else
+        echo "[!!] Cannot connect to Docker. You may need to be in the 'docker' group:"
+        echo "       sudo usermod -aG docker $USER"
+        echo "     Then log out and back in (or run: newgrp docker)"
+    fi
+    errors=$((errors + 1))
+fi
+
+# Current user in docker group? (warn even if Docker works via sudo)
+if id -nG "$USER" | grep -qw docker; then
+    echo "[ok] User '$USER' is in the docker group"
+else
+    echo "[!]  User '$USER' is not in the 'docker' group."
+    echo "     cw runs docker without sudo, so you likely need:"
+    echo "       sudo usermod -aG docker $USER"
+    echo "     Then log out and back in (or run: newgrp docker)"
+    # Not fatal — Docker might work via socket permissions or rootless mode
+fi
+
+# git installed?
+if command -v git &>/dev/null; then
+    echo "[ok] git is installed"
+else
+    echo "[!!] git is not installed. Install it first: sudo apt install git"
+    errors=$((errors + 1))
+fi
+
+# Claude CLI installed?
+if command -v claude &>/dev/null; then
+    echo "[ok] Claude CLI is installed"
+else
+    echo "[!]  Claude CLI not found on host (needed inside containers)"
+    echo "     Install: npm install -g @anthropic-ai/claude-code"
+fi
+
+if [[ "$errors" -gt 0 ]]; then
+    echo ""
+    echo "Fix the errors above and re-run setup.sh"
+    exit 1
+fi
+echo ""
+
 # --- 1. OS user for defense in depth ---
 if id claude-worker &>/dev/null; then
     echo "[ok] claude-worker user already exists"
@@ -64,9 +123,25 @@ else
     fi
 fi
 
-# --- 4. Build Docker image ---
+# --- 4. Install cw command (before docker build so it's available even if build fails) ---
 echo ""
-echo "[+] Building Docker image..."
+echo "[+] Installing cw command..."
+chmod +x "${SCRIPT_DIR}/cw"
+
+mkdir -p "$HOME/.local/bin"
+ln -sf "${SCRIPT_DIR}/cw" "$HOME/.local/bin/cw"
+
+if echo "$PATH" | grep -q "$HOME/.local/bin"; then
+    echo "[ok] cw installed to ~/.local/bin/cw"
+else
+    echo "[ok] cw symlinked to ~/.local/bin/cw"
+    echo "[!]  ~/.local/bin is not on your PATH. Add it:"
+    echo '       echo '\''export PATH="$HOME/.local/bin:$PATH"'\'' >> ~/.bashrc && source ~/.bashrc'
+fi
+
+# --- 5. Build Docker image ---
+echo ""
+echo "[+] Building Docker image (this may take a while on first run)..."
 docker build \
     --build-arg USER_UID="$(id -u)" \
     --build-arg USER_GID="$(id -g)" \
@@ -74,47 +149,22 @@ docker build \
     "$SCRIPT_DIR"
 echo "[ok] Docker image built: claude-worker:latest"
 
-# --- 5. Install cw command ---
-echo ""
-echo "[+] Installing cw command..."
-chmod +x "${SCRIPT_DIR}/cw"
-
-# Symlink to ~/.local/bin (no sudo needed)
-mkdir -p "$HOME/.local/bin"
-ln -sf "${SCRIPT_DIR}/cw" "$HOME/.local/bin/cw"
-
-# Check if ~/.local/bin is on PATH
-if echo "$PATH" | grep -q "$HOME/.local/bin"; then
-    echo "[ok] cw installed to ~/.local/bin/cw"
-else
-    echo "[ok] cw installed to ~/.local/bin/cw"
-    echo "[!] Add ~/.local/bin to your PATH:"
-    echo '    echo '\''export PATH="$HOME/.local/bin:$PATH"'\'' >> ~/.bashrc'
-fi
-
 # --- 6. Verify Claude auth ---
 echo ""
 if [[ -f "$HOME/.claude/.credentials.json" ]]; then
     echo "[ok] Claude OAuth credentials found"
 else
-    echo "[!] No Claude credentials found at ~/.claude/.credentials.json"
-    echo "    Run 'claude' on the host first to log in with your plan."
+    echo "[!]  No Claude credentials found at ~/.claude/.credentials.json"
+    echo "     Run 'claude' on the host first to log in with your plan."
 fi
 
 echo ""
 echo "=== Setup Complete ==="
 echo ""
 echo "Usage:"
-echo "  cw new myproject               # Create a new container + start Claude"
-echo "  cw new myproject 'fix bug'     # Start with a prompt"
-echo "  cw attach myproject            # Re-attach to existing container"
-echo "  cw ls                          # List all cw containers"
-echo "  cw rm myproject                # Remove a container"
-echo "  cw rm --all                    # Remove all stopped containers"
-echo "  cw rebuild                     # Rebuild the Docker image"
-echo ""
-echo "Your tmux workflow:"
-echo "  1. tmux new -s work"
-echo "  2. cw new myproject            # Pane 1"
-echo "  3. Ctrl-B %  →  cw new other  # Pane 2 (split)"
-echo "  4. Exit claude, come back with 'cw attach myproject'"
+echo "  cw new myproject ~/src/myproject   # Create a new container + start Claude"
+echo "  cw new myproject ~/src/myproject 'fix the login bug'"
+echo "  cw attach myproject                # Re-attach to existing container"
+echo "  cw ls                              # List all cw containers"
+echo "  cw rm myproject                    # Remove a container"
+echo "  cw rebuild                         # Rebuild the Docker image"
