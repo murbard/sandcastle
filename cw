@@ -109,7 +109,7 @@ cmd_new() {
     if [[ ${#agent_args[@]} -eq 0 ]]; then
         case "$agent" in
             claude) agent_args=(--dangerously-skip-permissions) ;;
-            codex)  agent_args=(--full-auto) ;;
+            codex)  agent_args=(--dangerously-bypass-approvals-and-sandbox) ;;
         esac
     fi
 
@@ -195,6 +195,7 @@ cmd_new() {
         \
         -v "${CLAUDE_DIR}:/home/coder/.claude:rw" \
         -v "${HOME}/.claude.json:/home/coder/.claude.json:rw" \
+        -v "${HOME}/.codex:/home/coder/.codex:rw" \
         -v "/home/claude-worker/.cache/uv:/home/coder/.cache/uv:rw" \
         \
         -e "GITHUB_TOKEN=${github_token}" \
