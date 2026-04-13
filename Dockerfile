@@ -50,6 +50,9 @@ USER coder
 RUN curl -fsSL https://claude.ai/install.sh | bash
 ENV PATH="/home/coder/.local/bin:${PATH}"
 
+# ── OpenAI Codex CLI ──────────────────────────────────────────────────────────
+RUN sudo npm install -g @openai/codex
+
 # ── uv + Python runtime ──────────────────────────────────────────────────────
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 RUN uv python install 3.12 \
@@ -105,6 +108,10 @@ ENV PATH="/home/coder/.opam/default/bin:${PATH}"
 ENV OPAM_SWITCH_PREFIX="/home/coder/.opam/default"
 ENV CAML_LD_LIBRARY_PATH="/home/coder/.opam/default/lib/stublibs"
 ENV OCAML_TOPLEVEL_PATH="/home/coder/.opam/default/lib/toplevel"
+
+# ── Go ─────────────────────────────────────────────────────────────────────────
+RUN curl -fsSL https://go.dev/dl/go1.24.2.linux-amd64.tar.gz | sudo tar -C /usr/local -xz
+ENV PATH="/usr/local/go/bin:/home/coder/go/bin:${PATH}"
 
 # ── Rust ───────────────────────────────────────────────────────────────────────
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y

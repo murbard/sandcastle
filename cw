@@ -5,6 +5,7 @@ set -euo pipefail
 PROJECTS_ROOT="${CW_PROJECTS_ROOT:-$HOME/src}"
 CLAUDE_DIR="${CW_CLAUDE_DIR:-$HOME/.claude}"
 GITHUB_TOKEN_FILE="${CW_GITHUB_TOKEN_FILE:-$HOME/.claude-worker/github-token}"
+OPENAI_KEY_FILE="${CW_OPENAI_KEY_FILE:-$HOME/.claude-worker/openai-api-key}"
 IMAGE="${CW_IMAGE:-claude-worker:latest}"
 MEMORY_LIMIT="${CW_MEMORY:-8g}"
 CPU_LIMIT="${CW_CPUS:-4}"
@@ -17,13 +18,14 @@ usage() {
 Usage: cw <command> [args...]
 
 Commands:
-  new <name> <path> [options] [claude args...]
-                                      Create a new container and start Claude Code
+  new <name> <path> [options] [agent args...]
+                                      Create a new container and start an AI agent
+      --codex                         Use OpenAI Codex instead of Claude (default: claude)
       --with-latex                    Use LaTeX-enabled image
       --memory <mem|max>              Memory limit (default: \$CW_MEMORY or 8g, "max" = unlimited)
       --cpus <n|max>                  CPU limit (default: \$CW_CPUS or 4, "max" = unlimited)
       --gpus <all|none|0,1,...>       GPU access (default: all)
-  attach <name>                       Re-attach to an existing container (resumes session)
+  attach <name> [--codex|--claude]    Re-attach or switch agent in an existing container
   shell <name>                        Open a root shell in a running container
   ls                                  List all cw containers
   rm <name>                           Remove a container
@@ -33,21 +35,23 @@ Commands:
   rebuild [--with-latex]              Rebuild the Docker image
 
 Environment variables:
-  CW_GITHUB_TOKEN_FILE  GitHub token file (default: ~/.claude-worker/github-token)
-  CW_MEMORY             Container memory limit (default: 8g)
-  CW_CPUS               Container CPU limit (default: 4)
+  CW_GITHUB_TOKEN_FILE    GitHub token file (default: ~/.claude-worker/github-token)
+  CW_OPENAI_KEY_FILE      OpenAI API key file (default: ~/.claude-worker/openai-api-key)
+  CW_MEMORY               Container memory limit (default: 8g)
+  CW_CPUS                 Container CPU limit (default: 4)
 
 Examples:
   cw new fix-auth ~/src/myproject
-  cw new experiment /tmp/scratch
-  cw new bugfix ~/src/myproject 'fix the login bug'
+  cw new fix-auth ~/src/myproject --codex
+  cw new experiment /tmp/scratch 'fix the login bug'
   cw new paper ~/src/thesis --with-latex
   cw new ml-train ~/src/model --memory max --cpus max --gpus 0,1
-  cw new safe-task ~/src/app --gpus none
+  cw attach fix-auth
+  cw attach fix-auth --codex
+  cw attach fix-auth --claude
   cw set ml-train --memory max --cpus max
   cw rebuild --with-latex
   cw ls
-  cw attach fix-auth
   cw rm fix-auth
   cw rm --all
 EOF
@@ -78,18 +82,21 @@ cmd_new() {
     shift 2
 
     # Parse flags
+    local agent="claude"
     local use_latex=0
     local memory="$MEMORY_LIMIT"
     local cpus="$CPU_LIMIT"
     local gpus="all"
-    local claude_args=()
+    local agent_args=()
     while [[ $# -gt 0 ]]; do
         case "$1" in
+            --codex)      agent="codex" ;;
+            --claude)     agent="claude" ;;
             --with-latex) use_latex=1 ;;
             --memory) memory="$2"; shift ;;
             --cpus)   cpus="$2"; shift ;;
             --gpus)   gpus="$2"; shift ;;
-            *) claude_args+=("$1") ;;
+            *) agent_args+=("$1") ;;
         esac
         shift
     done
@@ -98,9 +105,12 @@ cmd_new() {
     [[ "$memory" == "max" ]] && memory=0
     [[ "$cpus" == "max" ]]   && cpus=0
 
-    # Default to --dangerously-skip-permissions
-    if [[ ${#claude_args[@]} -eq 0 ]]; then
-        claude_args=(--dangerously-skip-permissions)
+    # Default agent args
+    if [[ ${#agent_args[@]} -eq 0 ]]; then
+        case "$agent" in
+            claude) agent_args=(--dangerously-skip-permissions) ;;
+            codex)  agent_args=(--full-auto) ;;
+        esac
     fi
 
     # Resolve to absolute path
@@ -136,6 +146,14 @@ cmd_new() {
         echo "Warning: No GitHub token at $GITHUB_TOKEN_FILE (git push won't work)" >&2
     fi
 
+    # OpenAI API key (for codex)
+    local openai_key=""
+    if [[ -f "$OPENAI_KEY_FILE" ]]; then
+        openai_key="$(cat "$OPENAI_KEY_FILE")"
+    elif [[ "$agent" == "codex" ]]; then
+        echo "Warning: No OpenAI API key at $OPENAI_KEY_FILE (codex won't work)" >&2
+    fi
+
     # Git identity
     local git_name git_email
     git_name="$(git config user.name 2>/dev/null || echo "Claude Worker")"
@@ -160,10 +178,11 @@ cmd_new() {
     esac
 
     echo "Creating container: ${container_name}"
+    echo "Agent: ${agent}"
     echo "Project: ${project_path}"
     echo "Image: ${image}"
     echo "GPUs: ${gpus}"
-    echo "Claude args: ${claude_args[*]}"
+    echo "Args: ${agent_args[*]}"
     echo ""
 
     # Create the container (stopped)
@@ -176,14 +195,17 @@ cmd_new() {
         \
         -v "${CLAUDE_DIR}:/home/coder/.claude:rw" \
         -v "${HOME}/.claude.json:/home/coder/.claude.json:rw" \
+        -v "/home/claude-worker/.cache/uv:/home/coder/.cache/uv:rw" \
         \
         -e "GITHUB_TOKEN=${github_token}" \
         -e "GH_TOKEN=${github_token}" \
+        -e "OPENAI_API_KEY=${openai_key}" \
         -e "GIT_AUTHOR_NAME=${git_name}" \
         -e "GIT_AUTHOR_EMAIL=${git_email}" \
         -e "GIT_COMMITTER_NAME=${git_name}" \
         -e "GIT_COMMITTER_EMAIL=${git_email}" \
-        -e "CW_CLAUDE_ARGS=${claude_args[*]}" \
+        -e "CW_AGENT=${agent}" \
+        -e "CW_AGENT_ARGS=${agent_args[*]}" \
         \
         --pids-limit=512 \
         --ulimit nofile=4096:4096 \
@@ -205,13 +227,34 @@ cmd_new() {
             git config --global user.email "${GIT_AUTHOR_EMAIL}"
             git config --global init.defaultBranch main
 
-            # Start Claude Code (resume last session if restarting)
-            if [ -f /tmp/.cw-has-run ]; then
-                exec claude --continue ${CW_CLAUDE_ARGS}
-            else
-                touch /tmp/.cw-has-run
-                exec claude ${CW_CLAUDE_ARGS}
+            # Pick agent: file override > env var > default
+            agent="${CW_AGENT:-claude}"
+            if [ -f /tmp/.cw-agent ]; then
+                agent="$(cat /tmp/.cw-agent)"
             fi
+
+            # Per-agent "has run" marker
+            marker="/tmp/.cw-has-run-${agent}"
+            has_run=false
+            [ -f "$marker" ] && has_run=true
+            touch "$marker"
+
+            case "$agent" in
+                codex)
+                    if $has_run; then
+                        exec codex resume --last
+                    else
+                        exec codex ${CW_AGENT_ARGS}
+                    fi
+                    ;;
+                *)
+                    if $has_run; then
+                        exec claude --continue ${CW_AGENT_ARGS}
+                    else
+                        exec claude ${CW_AGENT_ARGS}
+                    fi
+                    ;;
+            esac
         ' > /dev/null
 
     # Set tmux pane title and start
@@ -220,7 +263,17 @@ cmd_new() {
 }
 
 cmd_attach() {
-    local project="${1:?Usage: cw attach <project>}"
+    local project="${1:?Usage: cw attach <project> [--codex|--claude]}"
+    shift
+    local agent=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --codex)  agent="codex" ;;
+            --claude) agent="claude" ;;
+            *) echo "Unknown option: $1" >&2; exit 1 ;;
+        esac
+        shift
+    done
 
     local container_name="${CONTAINER_PREFIX}-${project}"
 
@@ -231,18 +284,38 @@ cmd_attach() {
         exit 1
     fi
 
-    # Check if it's running
     local state
     state="$(docker inspect -f '{{.State.Status}}' "$container_name")"
 
     case "$state" in
         running)
-            echo "Attaching to running container: ${container_name}"
-            [ -n "${TMUX:-}" ] && tmux rename-window "$project"
-            exec docker attach "$container_name"
+            if [[ -n "$agent" ]]; then
+                # Launch a new agent session inside the running container
+                echo "Starting ${agent} in running container: ${container_name}"
+                [ -n "${TMUX:-}" ] && tmux rename-window "$project"
+                echo "$agent" | docker exec -i "$container_name" tee /tmp/.cw-agent > /dev/null
+                case "$agent" in
+                    codex)  exec docker exec -it "$container_name" codex resume --last ;;
+                    claude) exec docker exec -it "$container_name" claude --continue --dangerously-skip-permissions ;;
+                esac
+            else
+                echo "Attaching to running container: ${container_name}"
+                [ -n "${TMUX:-}" ] && tmux rename-window "$project"
+                exec docker attach "$container_name"
+            fi
             ;;
         created|exited)
-            echo "Starting container: ${container_name}"
+            # Write agent override file into the stopped container
+            if [[ -n "$agent" ]]; then
+                local tmpfile
+                tmpfile="$(mktemp)"
+                echo "$agent" > "$tmpfile"
+                docker cp "$tmpfile" "$container_name":/tmp/.cw-agent
+                rm "$tmpfile"
+                echo "Starting container with ${agent}: ${container_name}"
+            else
+                echo "Starting container: ${container_name}"
+            fi
             [ -n "${TMUX:-}" ] && tmux rename-window "$project"
             exec docker start -ai "$container_name"
             ;;
