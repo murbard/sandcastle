@@ -1,4 +1,4 @@
-# claude-worker
+# sandcastle
 
 Disposable, sandboxed Docker containers for running AI coding agents (Claude Code, OpenAI Codex) against local repos. The `cw` command wraps Docker to give each agent session its own isolated environment while sharing credentials, caches, and session history from the host.
 

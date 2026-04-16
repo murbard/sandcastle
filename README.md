@@ -1,18 +1,18 @@
-# claude-worker
+# sandcastle
 
 Run AI coding agents in sandboxed Docker containers. Point `cw` at a local repo, and it spins up an isolated environment with Claude Code or OpenAI Codex running fully autonomously -- the container is the sandbox.
 
 ## Why
 
-AI coding agents work best when you let them run without approval prompts. But giving an agent unrestricted access to your host is a bad idea. `claude-worker` solves this by running each agent in a locked-down container: capabilities dropped, PID and memory limits enforced, but full network access and read-write access to the project directory. The agent can do whatever it wants inside the box.
+AI coding agents work best when you let them run without approval prompts. But giving an agent unrestricted access to your host is a bad idea. `sandcastle` solves this by running each agent in a locked-down container: capabilities dropped, PID and memory limits enforced, but full network access and read-write access to the project directory. The agent can do whatever it wants inside the box.
 
 This also makes it easy to run multiple agents in parallel on different branches of the same repo, each in its own container with its own conversation history.
 
 ## Quick start
 
 ```bash
-git clone https://github.com/murbard/claude-worker.git
-cd claude-worker
+git clone https://github.com/murbard/sandcastle.git
+cd sandcastle
 ./setup.sh
 ```
 
