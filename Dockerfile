@@ -157,6 +157,7 @@ RUN if [ "$WITH_TEZOS" = "1" ]; then \
 RUN if [ "$WITH_TEZOS" = "1" ]; then \
         apt-get update && apt-get install -y --no-install-recommends \
             octez-node \
+            octez-dal-node \
             octez-smart-rollup-node \
             octez-baker \
         && rm -rf /var/lib/apt/lists/*; \
