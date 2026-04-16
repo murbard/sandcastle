@@ -22,6 +22,7 @@ Commands:
                                       Create a new container and start an AI agent
       --codex                         Use OpenAI Codex instead of Claude (default: claude)
       --with-latex                    Use LaTeX-enabled image
+      --with-tezos                    Use Tezos/Octez-enabled image
       --memory <mem|max>              Memory limit (default: \$CW_MEMORY or 8g, "max" = unlimited)
       --cpus <n|max>                  CPU limit (default: \$CW_CPUS or 4, "max" = unlimited)
       --gpus <all|none|0,1,...>       GPU access (default: all)
@@ -32,7 +33,8 @@ Commands:
   rm --all                            Remove all stopped cw containers
   set <name> --memory <mem|max> [--cpus <n|max>]
                                       Update resource limits on a container (running or stopped)
-  rebuild [--with-latex]              Rebuild the Docker image
+  rebuild [--with-latex] [--with-tezos]
+                                      Rebuild the Docker image
 
 Environment variables:
   CW_GITHUB_TOKEN_FILE    GitHub token file (default: ~/.claude-worker/github-token)
@@ -45,12 +47,14 @@ Examples:
   cw new fix-auth ~/src/myproject --codex
   cw new experiment /tmp/scratch 'fix the login bug'
   cw new paper ~/src/thesis --with-latex
+  cw new tez ~/src/tezos --with-tezos
   cw new ml-train ~/src/model --memory max --cpus max --gpus 0,1
   cw attach fix-auth
   cw attach fix-auth --codex
   cw attach fix-auth --claude
   cw set ml-train --memory max --cpus max
   cw rebuild --with-latex
+  cw rebuild --with-tezos
   cw ls
   cw rm fix-auth
   cw rm --all
@@ -84,6 +88,7 @@ cmd_new() {
     # Parse flags
     local agent="claude"
     local use_latex=0
+    local use_tezos=0
     local memory="$MEMORY_LIMIT"
     local cpus="$CPU_LIMIT"
     local gpus="all"
@@ -93,6 +98,7 @@ cmd_new() {
             --codex)      agent="codex" ;;
             --claude)     agent="claude" ;;
             --with-latex) use_latex=1 ;;
+            --with-tezos) use_tezos=1 ;;
             --memory) memory="$2"; shift ;;
             --cpus)   cpus="$2"; shift ;;
             --gpus)   gpus="$2"; shift ;;
@@ -119,6 +125,29 @@ cmd_new() {
         exit 1
     }
     local project="$name"
+
+    # Detect git worktree: mount the common parent so git refs resolve,
+    # but set workdir to the specific branch for separate Claude histories
+    local mount_path="$project_path"
+    local container_workdir="/home/coder/workspace/${project}"
+    if [[ -f "${project_path}/.git" ]]; then
+        local git_common_dir
+        git_common_dir="$(cd "$project_path" && realpath "$(git rev-parse --git-common-dir)")"
+        local main_repo_dir
+        main_repo_dir="$(dirname "$git_common_dir")"
+        local worktree_parent
+        worktree_parent="$(dirname "$project_path")"
+        local mainrepo_parent
+        mainrepo_parent="$(dirname "$main_repo_dir")"
+        if [[ "$worktree_parent" == "$mainrepo_parent" ]]; then
+            mount_path="$worktree_parent"
+            local branch_dir
+            branch_dir="$(basename "$project_path")"
+            container_workdir="/home/coder/workspace/${project}/${branch_dir}"
+            echo "Detected git worktree — mounting parent: ${mount_path}"
+            echo "Working directory: ${container_workdir}"
+        fi
+    fi
 
     # Check for existing container for this project
     local container_name="${CONTAINER_PREFIX}-${project}"
@@ -161,10 +190,16 @@ cmd_new() {
 
     # Select image variant
     local image="$IMAGE"
-    if [[ "$use_latex" -eq 1 ]]; then
-        image="${IMAGE%:*}:latex"
+    local image_tag=""
+    [[ "$use_latex" -eq 1 ]] && image_tag="${image_tag:+${image_tag}-}latex"
+    [[ "$use_tezos" -eq 1 ]] && image_tag="${image_tag:+${image_tag}-}tezos"
+    if [[ -n "$image_tag" ]]; then
+        image="${IMAGE%:*}:${image_tag}"
         if ! docker image inspect "$image" &>/dev/null; then
-            echo "LaTeX image not found. Build it first with: cw rebuild --with-latex" >&2
+            local rebuild_flags=""
+            [[ "$use_latex" -eq 1 ]] && rebuild_flags+=" --with-latex"
+            [[ "$use_tezos" -eq 1 ]] && rebuild_flags+=" --with-tezos"
+            echo "Image ${image} not found. Build it first with: cw rebuild${rebuild_flags}" >&2
             exit 1
         fi
     fi
@@ -190,8 +225,8 @@ cmd_new() {
         --name "$container_name" \
         --hostname "$container_name" \
         \
-        -v "${project_path}:/home/coder/workspace/${project}:rw" \
-        -w "/home/coder/workspace/${project}" \
+        -v "${mount_path}:/home/coder/workspace/${project}:rw" \
+        -w "${container_workdir}" \
         \
         -v "${CLAUDE_DIR}:/home/coder/.claude:rw" \
         -v "${HOME}/.claude.json:/home/coder/.claude.json:rw" \
@@ -234,22 +269,24 @@ cmd_new() {
                 agent="$(cat /tmp/.cw-agent)"
             fi
 
-            # Per-agent "has run" marker
-            marker="/tmp/.cw-has-run-${agent}"
-            has_run=false
-            [ -f "$marker" ] && has_run=true
-            touch "$marker"
+            # Check if a previous session exists for this project
+            project_id="$(pwd | tr / -)"
+            project_dir="$HOME/.claude/projects/${project_id}"
+            has_session=false
+            if [ -d "$project_dir" ] && ls "$project_dir"/*.jsonl >/dev/null 2>&1; then
+                has_session=true
+            fi
 
             case "$agent" in
                 codex)
-                    if $has_run; then
+                    if $has_session; then
                         exec codex resume --last
                     else
                         exec codex ${CW_AGENT_ARGS}
                     fi
                     ;;
                 *)
-                    if $has_run; then
+                    if $has_session; then
                         exec claude --continue ${CW_AGENT_ARGS}
                     else
                         exec claude ${CW_AGENT_ARGS}
@@ -435,9 +472,11 @@ cmd_set() {
 
 cmd_rebuild() {
     local with_latex=0
+    local with_tezos=0
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --with-latex) with_latex=1 ;;
+            --with-tezos) with_tezos=1 ;;
         esac
         shift
     done
@@ -448,22 +487,30 @@ cmd_rebuild() {
         script_dir="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
     fi
 
+    local build_args=(
+        --build-arg "USER_UID=$(id -u)"
+        --build-arg "USER_GID=$(id -g)"
+    )
+    local image_tag=""
+    local desc="latest"
+
     if [[ "$with_latex" -eq 1 ]]; then
-        echo "Rebuilding claude-worker:latex image (with LaTeX + Pandoc)..."
-        docker build \
-            --build-arg USER_UID="$(id -u)" \
-            --build-arg USER_GID="$(id -g)" \
-            --build-arg WITH_LATEX=1 \
-            -t claude-worker:latex \
-            "$script_dir"
-    else
-        echo "Rebuilding claude-worker:latest image..."
-        docker build \
-            --build-arg USER_UID="$(id -u)" \
-            --build-arg USER_GID="$(id -g)" \
-            -t claude-worker:latest \
-            "$script_dir"
+        build_args+=(--build-arg WITH_LATEX=1)
+        image_tag="${image_tag:+${image_tag}-}latex"
+        desc+=" + LaTeX"
     fi
+    if [[ "$with_tezos" -eq 1 ]]; then
+        build_args+=(--build-arg WITH_TEZOS=1)
+        image_tag="${image_tag:+${image_tag}-}tezos"
+        desc+=" + Tezos"
+    fi
+
+    local tag="${image_tag:-latest}"
+    echo "Rebuilding claude-worker:${tag} image (${desc})..."
+    docker build \
+        "${build_args[@]}" \
+        -t "claude-worker:${tag}" \
+        "$script_dir"
     echo "Done."
 }
 

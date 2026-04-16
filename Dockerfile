@@ -3,6 +3,7 @@ FROM ubuntu:24.04
 ARG USER_UID=1000
 ARG USER_GID=1000
 ARG WITH_LATEX=0
+ARG WITH_TEZOS=0
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -116,6 +117,7 @@ ENV PATH="/usr/local/go/bin:/home/coder/go/bin:${PATH}"
 # ── Rust ───────────────────────────────────────────────────────────────────────
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/home/coder/.cargo/bin:${PATH}"
+RUN rustup target add wasm32-unknown-unknown
 
 # ── LaTeX + Pandoc (optional, ~900MB) ───────────────────────────────────────
 USER root
@@ -126,6 +128,58 @@ RUN if [ "$WITH_LATEX" = "1" ]; then \
         && rm -rf /var/lib/apt/lists/*; \
     fi
 USER coder
+
+# ── Tezos / Octez binaries (optional) ─────────────────────────────────────────
+USER root
+# Add Nomadic Labs apt repo
+RUN if [ "$WITH_TEZOS" = "1" ]; then \
+        apt-get update && apt-get install -y --no-install-recommends gpg curl \
+        && curl -s https://packages.nomadic-labs.com/ubuntu/octez.asc \
+            | gpg --dearmor -o /etc/apt/keyrings/octez.gpg \
+        && echo "deb [signed-by=/etc/apt/keyrings/octez.gpg] https://packages.nomadic-labs.com/ubuntu 24.04 main" \
+            > /etc/apt/sources.list.d/octez.list \
+        && apt-get update \
+        && rm -rf /var/lib/apt/lists/*; \
+    fi
+# octez-client has no problematic deps
+RUN if [ "$WITH_TEZOS" = "1" ]; then \
+        apt-get update && apt-get install -y --no-install-recommends octez-client \
+        && rm -rf /var/lib/apt/lists/*; \
+    fi
+# octez-zcash-params mirror has a size mismatch — download the deb directly
+RUN if [ "$WITH_TEZOS" = "1" ]; then \
+        curl -fSL -o /tmp/octez-zcash-params.deb \
+            https://packages.nomadic-labs.com/ubuntu/dists/24.04/main/binary-amd64/octez-zcash-params_1.0.0_all.deb \
+        && dpkg -i /tmp/octez-zcash-params.deb \
+        && rm /tmp/octez-zcash-params.deb; \
+    fi
+# octez-node, smart-rollup-node, baker (depend on zcash-params)
+RUN if [ "$WITH_TEZOS" = "1" ]; then \
+        apt-get update && apt-get install -y --no-install-recommends \
+            octez-node \
+            octez-smart-rollup-node \
+            octez-baker \
+        && rm -rf /var/lib/apt/lists/*; \
+    fi
+# smart-rollup-installer (from crates.io)
+USER coder
+RUN if [ "$WITH_TEZOS" = "1" ]; then \
+        cargo install tezos-smart-rollup-installer; \
+    fi
+# octez-smart-rollup-wasm-debugger (built from octez source using their build system)
+USER coder
+RUN if [ "$WITH_TEZOS" = "1" ]; then \
+        git clone --depth 1 --branch octez-v24.3 https://gitlab.com/tezos/tezos.git /tmp/octez \
+        && cd /tmp/octez \
+        && sudo apt-get update && sudo apt-get install -y --no-install-recommends \
+            cargo libpq-dev libsqlite3-dev \
+        && sudo rm -rf /var/lib/apt/lists/* \
+        && make build-deps \
+        && eval $(opam env) \
+        && dune build src/bin_wasm_debugger/main_wasm_debugger.exe \
+        && sudo cp _build/default/src/bin_wasm_debugger/main_wasm_debugger.exe /usr/local/bin/octez-smart-rollup-wasm-debugger \
+        && cd / && rm -rf /tmp/octez; \
+    fi
 
 WORKDIR /workspace
 ENTRYPOINT ["/bin/bash"]
