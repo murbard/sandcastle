@@ -87,6 +87,52 @@ cw new paper ~/src/thesis --with-latex
 cw shell fix-auth
 ```
 
+**Web portal.** Agents often start small web servers (Flask, Streamlit, Jupyter, …) to explore data or preview a UI. Instead of memorizing a different port for each one, run the portal once and access everything through a single address. See [Web portal](#web-portal) below.
+
+## Web portal
+
+A single reverse proxy ([Traefik](https://traefik.io/)) plus a dashboard ([Homepage](https://gethomepage.dev/)) sit in front of every web server your agents start. You visit one address — `http://<host>:8080` — see all running services on the dashboard, and click through to any of them. No more remembering ports.
+
+It's a small Docker Compose stack in `portal/`, completely independent of `cw` (you can use one without the other).
+
+### Starting the portal
+
+```bash
+cd portal
+docker compose up -d
+```
+
+That's it. Visit `http://<host>:8080` (or, over Tailscale, `http://<machine-name>:8080`). The dashboard is empty until you register a service. The portal keeps running across reboots (`restart: unless-stopped`); stop it with `docker compose down`.
+
+If port 8080 is taken, change `entryPoints.web.address` in `portal/traefik.yml`.
+
+> **Security:** the portal has no authentication. Keep port 8080 off the public internet — bind it to your tailnet (Tailscale) or localhost only.
+
+### Registering a service
+
+Use the `expose` script (in `portal/expose`):
+
+```bash
+expose add myapp 5001 "Flask dashboard for repo X"   # now at http://<host>:8080/myapp/
+expose add notebook 8888                              # description is optional
+expose ls                                             # list registered services
+expose rm myapp                                       # unregister
+```
+
+`expose add <name> <port> [description]` writes a Traefik route (path prefix `/<name>`, stripped before proxying so your app sees requests at `/`) and adds the service to the Homepage dashboard. Traefik and Homepage both hot-reload — no restart needed.
+
+### From inside cw containers
+
+`cw` mounts the `expose` script onto each container's `PATH` and points it at the shared portal config. So an agent that starts a server can register it itself:
+
+```bash
+# inside a cw container
+flask run --port 5001 &
+expose add auth-explorer 5001 "Visualizing the auth logs"
+```
+
+Agents are told about this in their system prompt, so they'll usually do it on their own. Since containers use host networking, the port is already reachable on the host — `expose` just tells the portal where to find it.
+
 ## Pre-installed tools
 
 The base image (Ubuntu 24.04) includes:
@@ -113,7 +159,7 @@ The project directory is bind-mounted read-write. Credentials (`~/.claude`, `~/.
 ## Requirements
 
 - Linux (tested on Ubuntu 24.04)
-- Docker
+- Docker (with the Compose plugin, if you want the web portal)
 - Claude CLI (`npm install -g @anthropic-ai/claude-code`) with an active session
 - For Codex: OpenAI API key at `~/.claude-worker/openai-api-key`
 - For GPU support: NVIDIA drivers + Container Toolkit (run `./install-nvidia-toolkit.sh`)
@@ -130,6 +176,9 @@ The project directory is bind-mounted read-write. Credentials (`~/.claude`, `~/.
 | `cw rm --all` | Remove all stopped containers |
 | `cw set <name> --memory <m> --cpus <n>` | Update resource limits |
 | `cw rebuild [--with-latex] [--with-tezos]` | Rebuild the Docker image |
+| `expose add <name> <port> [desc]` | Publish a web server through the portal |
+| `expose rm <name>` | Unpublish a service |
+| `expose ls` | List published services |
 
 ## License
 

@@ -1,0 +1,14 @@
+http:
+  routers:
+    homepage:
+      rule: "PathPrefix(`/`)"
+      entryPoints:
+        - web
+      service: homepage
+      priority: 1
+
+  services:
+    homepage:
+      loadBalancer:
+        servers:
+          - url: "http://127.0.0.1:3000"

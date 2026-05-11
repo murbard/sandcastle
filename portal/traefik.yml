@@ -1,0 +1,13 @@
+entryPoints:
+  web:
+    address: ":8080"
+
+providers:
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+
+api: {}
+
+log:
+  level: WARN

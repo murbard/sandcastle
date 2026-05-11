@@ -1,0 +1,14 @@
+# Service routes registered at runtime by the `expose` script.
+# Only the static catch-all route (homepage.yml) is tracked.
+/dynamic/*.yml
+!/dynamic/homepage.yml
+
+# Service metadata written by `expose`.
+/services/*
+!/services/.gitkeep
+
+# Homepage runtime state and the files it auto-generates on first run.
+# Only our hand-maintained config (settings, widgets) is tracked.
+/homepage/*
+!/homepage/settings.yaml
+!/homepage/widgets.yaml

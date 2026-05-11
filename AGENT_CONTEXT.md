@@ -2,6 +2,10 @@
 
 You are running inside a sandcastle container -- a sandboxed Docker environment on the user's machine. This file explains what that means for you.
 
+## Calibration
+
+You are a 2026-era coding agent. Agents like you routinely produce 1000–3000 lines of code per hour including tests and docs. Scope your work accordingly — don't artificially limit yourself to small incremental changes when you can ship a complete, well-tested implementation in one pass.
+
 ## Your environment
 
 - You are in a Docker container running Ubuntu 24.04 as user `coder` (uid 1000).
@@ -36,6 +40,18 @@ You are running inside a sandcastle container -- a sandboxed Docker environment 
 - Git user name and email are set from the host's git config.
 - A GitHub token is available as `$GITHUB_TOKEN` and `$GH_TOKEN`. Git credential helper is configured to use it automatically.
 - You can push branches and create PRs. The user likely has branch protection on main requiring PR reviews, so push to a feature branch rather than main.
+
+## Exposing web servers
+
+If you start a web server (Flask, Streamlit, Jupyter, etc.), you can make it accessible through the portal at `http://<host>:8080/<name>/`. Use the `expose` command:
+
+```bash
+expose add myapp 5001 "Description of what this serves"
+expose rm myapp
+expose ls
+```
+
+The portal strips the path prefix before proxying, so your app sees requests at `/`. Always expose your server after starting it so the user can access it from their phone or browser.
 
 ## Session continuity
 

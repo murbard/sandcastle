@@ -11,6 +11,16 @@ MEMORY_LIMIT="${CW_MEMORY:-8g}"
 CPU_LIMIT="${CW_CPUS:-4}"
 CONTAINER_PREFIX="cw"
 
+# Resolve script directory (follows symlinks)
+CW_SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+[[ -L "$0" ]] && CW_SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+
+# Load agent system prompt if available
+CW_SYSTEM_PROMPT=""
+if [[ -f "$CW_SCRIPT_DIR/AGENT_CONTEXT.md" ]]; then
+    CW_SYSTEM_PROMPT="$(cat "$CW_SCRIPT_DIR/AGENT_CONTEXT.md")"
+fi
+
 # --- Helpers ---
 
 usage() {
@@ -232,6 +242,11 @@ cmd_new() {
         -v "${HOME}/.claude.json:/home/coder/.claude.json:rw" \
         -v "${HOME}/.codex:/home/coder/.codex:rw" \
         -v "/home/claude-worker/.cache/uv:/home/coder/.cache/uv:rw" \
+        -v "${CW_SCRIPT_DIR}/portal/expose:/usr/local/bin/expose:ro" \
+        -v "${CW_SCRIPT_DIR}/portal/dynamic:/home/coder/.portal/dynamic:rw" \
+        -v "${CW_SCRIPT_DIR}/portal/services:/home/coder/.portal/services:rw" \
+        -v "${CW_SCRIPT_DIR}/portal/homepage:/home/coder/.portal/homepage:rw" \
+        -e "PORTAL_DIR=/home/coder/.portal" \
         \
         -e "GITHUB_TOKEN=${github_token}" \
         -e "GH_TOKEN=${github_token}" \
@@ -242,6 +257,7 @@ cmd_new() {
         -e "GIT_COMMITTER_EMAIL=${git_email}" \
         -e "CW_AGENT=${agent}" \
         -e "CW_AGENT_ARGS=${agent_args[*]}" \
+        -e "CW_SYSTEM_PROMPT=${CW_SYSTEM_PROMPT}" \
         \
         --pids-limit=512 \
         --ulimit nofile=4096:4096 \
@@ -287,9 +303,17 @@ cmd_new() {
                     ;;
                 *)
                     if $has_session; then
-                        exec claude --continue ${CW_AGENT_ARGS}
+                        if [ -n "$CW_SYSTEM_PROMPT" ]; then
+                            exec claude --continue ${CW_AGENT_ARGS} --append-system-prompt "$CW_SYSTEM_PROMPT"
+                        else
+                            exec claude --continue ${CW_AGENT_ARGS}
+                        fi
                     else
-                        exec claude ${CW_AGENT_ARGS}
+                        if [ -n "$CW_SYSTEM_PROMPT" ]; then
+                            exec claude ${CW_AGENT_ARGS} --append-system-prompt "$CW_SYSTEM_PROMPT"
+                        else
+                            exec claude ${CW_AGENT_ARGS}
+                        fi
                     fi
                     ;;
             esac

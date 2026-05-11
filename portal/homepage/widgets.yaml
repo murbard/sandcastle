@@ -1,0 +1,4 @@
+---
+- greeting:
+    text_size: xl
+    text: sandcastle

@@ -1,0 +1,10 @@
+---
+title: sandcastle
+theme: dark
+color: slate
+headerStyle: clean
+statusStyle: dot
+layout:
+  Services:
+    style: row
+    columns: 3

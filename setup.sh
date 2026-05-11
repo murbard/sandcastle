@@ -123,18 +123,19 @@ else
     fi
 fi
 
-# --- 4. Install cw command (before docker build so it's available even if build fails) ---
+# --- 4. Install cw + expose commands (before docker build so they're available even if build fails) ---
 echo ""
-echo "[+] Installing cw command..."
-chmod +x "${SCRIPT_DIR}/cw"
+echo "[+] Installing cw and expose commands..."
+chmod +x "${SCRIPT_DIR}/cw" "${SCRIPT_DIR}/portal/expose"
 
 mkdir -p "$HOME/.local/bin"
 ln -sf "${SCRIPT_DIR}/cw" "$HOME/.local/bin/cw"
+ln -sf "${SCRIPT_DIR}/portal/expose" "$HOME/.local/bin/expose"
 
 if echo "$PATH" | grep -q "$HOME/.local/bin"; then
-    echo "[ok] cw installed to ~/.local/bin/cw"
+    echo "[ok] cw and expose installed to ~/.local/bin"
 else
-    echo "[ok] cw symlinked to ~/.local/bin/cw"
+    echo "[ok] cw and expose symlinked to ~/.local/bin"
     echo "[!]  ~/.local/bin is not on your PATH. Add it:"
     echo '       echo '\''export PATH="$HOME/.local/bin:$PATH"'\'' >> ~/.bashrc && source ~/.bashrc'
 fi
@@ -158,6 +159,16 @@ else
     echo "     Run 'claude' on the host first to log in with your plan."
 fi
 
+# --- 7. Optional: start the web portal ---
+echo ""
+read -rp "Start the web portal (Traefik + Homepage on :8080)? [y/N] " start_portal
+if [[ "$start_portal" =~ ^[Yy]$ ]]; then
+    ( cd "${SCRIPT_DIR}/portal" && docker compose up -d )
+    echo "[ok] Portal running at http://localhost:8080  (register services with: expose add <name> <port>)"
+else
+    echo "[skip] Start it later with: cd ${SCRIPT_DIR}/portal && docker compose up -d"
+fi
+
 echo ""
 echo "=== Setup Complete ==="
 echo ""
@@ -168,3 +179,6 @@ echo "  cw attach myproject                # Re-attach to existing container"
 echo "  cw ls                              # List all cw containers"
 echo "  cw rm myproject                    # Remove a container"
 echo "  cw rebuild                         # Rebuild the Docker image"
+echo ""
+echo "  expose add myapp 5001 'desc'       # Publish a web server through the portal"
+echo "  expose ls                          # List published services"
